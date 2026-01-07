@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Create issue in dakboard/android-app (only if Android-app, no duplicates)
+      - name: Create issue in dakboard/android-app (only if Android-App, no duplicates)
         id: create_android_app
         env:
           CP_NUMBER: ${{ github.event.issue.number }}
@@ -19,15 +19,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Check for Android-app label (exact match)
-          HAS_ANDROID_APP=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Android-app" || true)
+          # Check for Android-App label (exact match)
+          HAS_ANDROID_APP=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Android-App" || true)
 
           if [ -z "$HAS_ANDROID_APP" ]; then
-            echo "Issue #$CP_NUMBER does not have Android-app label. Skipping android-app creation."
+            echo "Issue #$CP_NUMBER does not have Android-App label. Skipping android-app creation."
             exit 0
           fi
 
-          echo "Issue #$CP_NUMBER has Android-app label. Checking for existing android-app child issue..."
+          echo "Issue #$CP_NUMBER has Android-App label. Checking for existing android-app child issue..."
 
           # Dedupe: search dakboard/android-app for an issue with title starting "CP#<number> —"
           SEARCH_QUERY="repo:dakboard/android-app is:issue in:title \"CP#${CP_NUMBER} —\""
@@ -70,4 +70,3 @@ jobs:
 
           ANDROID_NUMBER=$(jq -r '.number' response.json)
           echo "android_app_number=$ANDROID_NUMBER" >> "$GITHUB_OUTPUT"
-
