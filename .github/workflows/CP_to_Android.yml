@@ -19,17 +19,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Check for Android-App label (exact match)
+          # Gate: must have Android-App label (exact match)
           HAS_ANDROID_APP=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Android-App" || true)
-
           if [ -z "$HAS_ANDROID_APP" ]; then
-            echo "Issue #$CP_NUMBER does not have Android-App label. Skipping android-app creation."
+            echo "Issue #$CP_NUMBER does not have Android-App label. Skipping."
             exit 0
           fi
 
-          echo "Issue #$CP_NUMBER has Android-App label. Checking for existing android-app child issue..."
+          # Hard dedupe: if marker label is present, never create again
+          ALREADY_CREATED=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "android-app-child-created" || true)
+          if [ -n "$ALREADY_CREATED" ]; then
+            echo "Marker label android-app-child-created already present. Skipping."
+            exit 0
+          fi
 
-          # Dedupe: search dakboard/android-app for an issue with title starting "CP#<number> —"
+          echo "Issue #$CP_NUMBER has Android-App and no marker. Checking for existing child (best-effort)..."
+
+          # Best-effort dedupe via search (can lag; marker label is the real guard)
           SEARCH_QUERY="repo:dakboard/android-app is:issue in:title \"CP#${CP_NUMBER} —\""
           SEARCH_URL="https://api.github.com/search/issues?q=$(python -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
 
@@ -41,7 +47,15 @@ jobs:
           TOTAL=$(echo "$SEARCH_RESP" | jq -r '.total_count // 0')
           if [ "$TOTAL" -gt 0 ]; then
             EXISTING_URL=$(echo "$SEARCH_RESP" | jq -r '.items[0].html_url // ""')
-            echo "android-app child issue already exists: $EXISTING_URL"
+            echo "Child already exists (search found): $EXISTING_URL"
+
+            # Add marker label so we don't keep checking/creating
+            curl -sS -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+              -d "$(jq -n --arg l "android-app-child-created" '{labels: [$l]}')" >/dev/null
+
             exit 0
           fi
 
@@ -70,3 +84,12 @@ jobs:
 
           ANDROID_NUMBER=$(jq -r '.number' response.json)
           echo "android_app_number=$ANDROID_NUMBER" >> "$GITHUB_OUTPUT"
+
+          # Add marker label to CP issue so we NEVER create duplicates on future events
+          curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+            -d "$(jq -n --arg l "android-app-child-created" '{labels: [$l]}')" >/dev/null
+
+          echo "Added marker label android-app-child-created to CP issue #$CP_NUMBER"
