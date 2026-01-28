@@ -4,6 +4,10 @@ on:
   issues:
     types: [opened, labeled]
 
+concurrency:
+  group: cp-hwos-child-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   create_hardware_os_issue:
     runs-on: ubuntu-latest
@@ -19,17 +23,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Check for Hardware-OS label
+          # Gate: must have Hardware-OS label
           HAS_HARDWARE_OS=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Hardware-OS" || true)
-
           if [ -z "$HAS_HARDWARE_OS" ]; then
-            echo "Issue #$CP_NUMBER does not have Hardware-OS label. Skipping Hardware-OS creation."
+            echo "Issue #$CP_NUMBER does not have Hardware-OS label. Skipping."
             exit 0
           fi
 
-          echo "Issue #$CP_NUMBER has Hardware-OS label. Checking for existing Hardware-OS child issue..."
+          # Hard dedupe: if marker label is present in THIS event payload, skip
+          ALREADY_CREATED=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "hardware-os-child-created" || true)
+          if [ -n "$ALREADY_CREATED" ]; then
+            echo "Marker label hardware-os-child-created already present. Skipping."
+            exit 0
+          fi
 
-          # Dedupe: search Hardware-OS for an issue with title starting "CP#<number> —"
+          echo "Issue #$CP_NUMBER has Hardware-OS and no marker (payload). Checking live labels on CP issue..."
+
+          # Re-check live labels from CP issue (handles race if another run already added marker)
+          CP_STATUS=$(curl -sS -o cp_issue.json -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER")
+
+          if [ "$CP_STATUS" -lt 200 ] || [ "$CP_STATUS" -ge 300 ]; then
+            echo "Failed to fetch CP issue live state (status $CP_STATUS)"
+            cat cp_issue.json
+            exit 1
+          fi
+
+          LIVE_MARKER=$(jq -r '.labels[].name' cp_issue.json | grep -Fx "hardware-os-child-created" || true)
+          if [ -n "$LIVE_MARKER" ]; then
+            echo "Marker label already present on CP issue (live). Skipping."
+            exit 0
+          fi
+
+          echo "No marker on CP issue (live). Checking for existing child (best-effort search)..."
+
+          # Best-effort dedupe via search (can lag; marker label is the real guard)
           SEARCH_QUERY="repo:dakboard/Hardware-OS is:issue in:title \"CP#${CP_NUMBER} —\""
           SEARCH_URL="https://api.github.com/search/issues?q=$(python -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
 
@@ -42,13 +72,21 @@ jobs:
           if [ "$TOTAL" -gt 0 ]; then
             EXISTING_URL=$(echo "$SEARCH_RESP" | jq -r '.items[0].html_url // ""')
             echo "Hardware-OS child issue already exists: $EXISTING_URL"
+
+            # Add marker label so we don't keep checking/creating
+            curl -sS -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+              -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
+
             exit 0
           fi
 
           echo "No existing child found. Creating Hardware-OS issue."
 
           TITLE="CP#${CP_NUMBER} — ${CP_TITLE}"
-          BODY=$(printf "Cloud-Platform issue: %s\n\nCustomer reported:\n\n%s\n" "$CP_URL" "$CP_BODY")
+          BODY=$(printf "CP-ISSUE: %s\nCloud-Platform issue: %s\n\nCustomer reported:\n\n%s\n" "$CP_NUMBER" "$CP_URL" "$CP_BODY")
 
           JSON_PAYLOAD=$(jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}')
 
@@ -70,3 +108,12 @@ jobs:
 
           HW_NUMBER=$(jq -r '.number' response.json)
           echo "hardware_os_number=$HW_NUMBER" >> "$GITHUB_OUTPUT"
+
+          # Add marker label to CP issue so we NEVER create duplicates on future events
+          curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+            -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
+
+          echo "Added marker label hardware-os-child-created to CP issue #$CP_NUMBER"
