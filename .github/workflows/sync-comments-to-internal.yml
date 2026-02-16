@@ -36,7 +36,7 @@ jobs:
           fi
 
           COMMENT_AUTHOR="${{ github.event.comment.user.login }}"
-          COMMENT_URL="https://github.com/dakboard/Cloud-Platform/issues/${CP_NUMBER}#issuecomment-${{ github.event.comment.id }}"
+          COMMENT_URL="https://github.com/dakboard/DAKboard/issues/${CP_NUMBER}#issuecomment-${{ github.event.comment.id }}"
           COMMENT_TEXT="${{ github.event.comment.body }}"
 
           # Build nicely formatted Markdown in bash (real newlines, no \n escaping)
