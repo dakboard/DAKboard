@@ -1,4 +1,4 @@
-name: Sync CP comments to Internal (safe, no shell interpolation)
+name: Sync CP comments to Internal
 
 on:
   issue_comment:
@@ -19,7 +19,7 @@ jobs:
           # show part of the event file so you can confirm the event payload used (safe read)
           head -n 60 "$GITHUB_EVENT_PATH" || true
 
-      - name: Mirror comment into Internal issue (completely safe)
+      - name: Mirror comment into Internal issue
         shell: bash
         run: |
           set -euo pipefail
