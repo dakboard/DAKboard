@@ -10,20 +10,27 @@ jobs:
 
     steps:
      - name: Mirror comment into Internal issue
+       shell: bash
        run: |
-        set -euo pipefail
-    # Skip bot comments to avoid loops
-    COMMENT_USER_TYPE=$(jq -r '.comment.user.type' "$GITHUB_EVENT_PATH")
-    if [ "$COMMENT_USER_TYPE" = "Bot" ]; then
-      echo "Skipping bot comment"
-      exit 0
-    fi
+          set -euo pipefail
 
-    CP_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
-    TITLE_PREFIX="CP#${CP_NUMBER} —"
-    echo "Looking for Internal issue matching prefix: $TITLE_PREFIX"
+    # Read fields from the webhook JSON (safe)
+        COMMENT_USER_TYPE=$(jq -r '.comment.user.type // ""' "$GITHUB_EVENT_PATH")
+        if [ "$COMMENT_USER_TYPE" = "Bot" ]; then
+          echo "Skipping bot comment"
+          exit 0
+      fi
 
-    # Fetch Internal issues and find matching one by title prefix
+      CP_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+      CP_REPO=$(jq -r '.repository.full_name' "$GITHUB_EVENT_PATH")
+      COMMENT_ID=$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")
+      COMMENT_AUTHOR=$(jq -r '.comment.user.login' "$GITHUB_EVENT_PATH")
+      COMMENT_TEXT=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")
+
+      TITLE_PREFIX="CP#${CP_NUMBER} —"
+      echo "Looking for Internal issue matching prefix: $TITLE_PREFIX"
+
+    # Fetch Internal issues and find the first matching one by title prefix
     RESP=$(curl -sS \
       -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
       -H "Accept: application/vnd.github+json" \
@@ -36,41 +43,24 @@ jobs:
       exit 0
     fi
 
-    COMMENT_AUTHOR=$(jq -r '.comment.user.login' "$GITHUB_EVENT_PATH")
-    COMMENT_ID=$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")
-    # Read the comment body safely from the event JSON (preserves newlines and special chars)
-    COMMENT_TEXT=$(jq -r '.comment.body' "$GITHUB_EVENT_PATH")
-
-    # Use the repository that generated the event to handle repo rename automatically
-    CP_REPO=$(jq -r '.repository.full_name' "$GITHUB_EVENT_PATH")
+    # Build the original comment link using the repo that fired the event
     COMMENT_URL="https://github.com/${CP_REPO}/issues/${CP_NUMBER}#issuecomment-${COMMENT_ID}"
 
     echo "Posting comment from @${COMMENT_AUTHOR} to Internal issue #${INTERNAL_NUMBER}"
 
-    # Build the body safely using jq so newlines, markdown, images and urls are preserved/escaped correctly.
-    jq -n --arg author "${COMMENT_AUTHOR}" \
-          --arg cp     "${CP_NUMBER}" \
-          --arg text   "${COMMENT_TEXT}" \
-          --arg url    "${COMMENT_URL}" \
+    # Build the JSON payload safely with jq. This preserves newlines, markdown, images, and URLs.
+    jq -n --arg author "$COMMENT_AUTHOR" \
+          --arg cp     "$CP_NUMBER" \
+          --arg text   "$COMMENT_TEXT" \
+          --arg url    "$COMMENT_URL" \
           '{body: ("**Comment from @" + $author + " on issue #" + $cp + ":\\n\\n" + $text + "\\n\\n---\\n[View original comment](" + $url + ")")}' \
-      > payload.json
+      | curl -sS -X POST \
+          -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
+          -d @-
 
-    HTTP_STATUS=$(curl -sS -o response.json -w "%{http_code}" \
-      -X POST \
-      -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
-      -d @payload.json)
-
-    echo "Comment HTTP status: $HTTP_STATUS"
-    cat response.json
-
-    if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-      echo "Failed to post comment to Internal (status $HTTP_STATUS)"
-      exit 1
-    fi
-  shell: bash
-
+    echo "Posted."
           if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
             echo "Failed to post comment to Internal (status $HTTP_STATUS)"
             exit 1
