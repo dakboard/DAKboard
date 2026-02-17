@@ -1,4 +1,4 @@
-name: Sync CP comments to Internal
+name: Sync CP comments to Internal (safe, no shell interpolation)
 
 on:
   issue_comment:
@@ -11,12 +11,20 @@ jobs:
   sync_comment:
     runs-on: ubuntu-latest
     steps:
-      - name: Mirror comment into Internal issue
+      - name: Show event file path (debug)
+        shell: bash
+        run: |
+          echo "GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
+          echo "Contents (first 60 lines):"
+          # show part of the event file so you can confirm the event payload used (safe read)
+          head -n 60 "$GITHUB_EVENT_PATH" || true
+
+      - name: Mirror comment into Internal issue (completely safe)
         shell: bash
         run: |
           set -euo pipefail
 
-          # Ensure event payload exists
+          # ensure event JSON exists
           if [ -z "${GITHUB_EVENT_PATH:-}" ] || [ ! -f "$GITHUB_EVENT_PATH" ]; then
             echo "Event payload not found at GITHUB_EVENT_PATH"
             exit 1
@@ -29,7 +37,7 @@ jobs:
             exit 0
           fi
 
-          # Get CP issue number and build title prefix
+          # Extract CP number and build title prefix using jq only
           CP_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
           TITLE_PREFIX="CP#${CP_NUMBER} —"
           echo "Looking for Internal issue matching prefix: $TITLE_PREFIX"
@@ -49,7 +57,7 @@ jobs:
 
           echo "Internal issue #${INTERNAL_NUMBER} found. Building payload entirely inside jq..."
 
-          # Build JSON payload purely with jq (no shell interpolation of the comment body)
+          # Build the JSON payload using jq only; never let the shell touch the comment body
           jq --slurpfile ev "$GITHUB_EVENT_PATH" -n '
             ($ev[0]) as $e
             |
@@ -85,4 +93,5 @@ jobs:
           fi
 
           echo "Posted comment safely."
+
 
