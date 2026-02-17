@@ -16,25 +16,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          # quick check: ensure we have the event payload file
+          # Ensure event payload exists
           if [ -z "${GITHUB_EVENT_PATH:-}" ] || [ ! -f "$GITHUB_EVENT_PATH" ]; then
             echo "Event payload not found at GITHUB_EVENT_PATH"
             exit 1
           fi
 
-          # Skip bot comments
+          # If the commenter is a Bot, skip
           COMMENT_USER_TYPE=$(jq -r '.comment.user.type // ""' "$GITHUB_EVENT_PATH")
           if [ "$COMMENT_USER_TYPE" = "Bot" ]; then
-            echo "Skipping bot comment (Bot)"
+            echo "Skipping bot comment"
             exit 0
           fi
 
-          # Use jq only to extract CP number and find the Internal issue
+          # Get CP issue number and build title prefix
           CP_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
           TITLE_PREFIX="CP#${CP_NUMBER} —"
           echo "Looking for Internal issue matching prefix: $TITLE_PREFIX"
 
-          # Fetch Internal issues (API call)
+          # Fetch Internal issues (first 100). Adjust per_page if you have >100 issues.
           RESP=$(curl -sS \
             -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
@@ -49,35 +49,31 @@ jobs:
 
           echo "Internal issue #${INTERNAL_NUMBER} found. Building payload entirely inside jq..."
 
-          # Build the JSON payload using jq alone (never let shell evaluate the comment body)
-          jq --slurpfile ev "$GITHUB_EVENT_PATH" \
-            -n '
-              # $ev is an array with a single element = the event JSON
-              ($ev[0]) as $e
-              |
-              # prepare fields
-              ($e.comment.user.login // "") as $author
-              |
-              ($e.issue.number | tostring) as $cpnum
-              |
-              ($e.comment.id | tostring) as $cid
-              |
-              ($e.repository.full_name // "") as $repo
-              |
-              ($e.comment.body // "") as $comment_body
-              |
-              # construct a rendered markdown body; jq will correctly escape content into JSON
-              { body:
-                  ("**Comment from @" + $author + " on " + $repo + " issue #" + $cpnum + ":\\n\\n" + $comment_body + "\\n\\n---\\n[View original comment](https://github.com/" + $repo + "/issues/" + $cpnum + "#issuecomment-" + $cid + ")")
-              }
-            ' \
-            | curl -sS -X POST \
-                -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
-                -d @- \
-            -o response.json -w "%{http_code}" \
-            > status.txt
+          # Build JSON payload purely with jq (no shell interpolation of the comment body)
+          jq --slurpfile ev "$GITHUB_EVENT_PATH" -n '
+            ($ev[0]) as $e
+            |
+            ($e.comment.user.login // "") as $author
+            |
+            ($e.issue.number | tostring) as $cpnum
+            |
+            ($e.comment.id | tostring) as $cid
+            |
+            ($e.repository.full_name // "") as $repo
+            |
+            ($e.comment.body // "") as $comment_body
+            |
+            {
+              body:
+                ("**Comment from @" + $author + " on " + $repo + " issue #" + $cpnum + ":\\n\\n" + $comment_body + "\\n\\n---\\n[View original comment](https://github.com/" + $repo + "/issues/" + $cpnum + "#issuecomment-" + $cid + ")")
+            }
+          ' \
+          | curl -sS -X POST \
+              -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
+              -d @- \
+              -o response.json -w "%{http_code}" > status.txt
 
           HTTP_STATUS=$(cat status.txt)
           echo "Comment HTTP status: $HTTP_STATUS"
