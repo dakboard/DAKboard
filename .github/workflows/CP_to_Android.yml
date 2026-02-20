@@ -43,7 +43,7 @@ jobs:
           CP_LABELS_STATUS=$(curl -sS -o cp_issue.json -w "%{http_code}" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER")
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER")
 
           if [ "$CP_LABELS_STATUS" -lt 200 ] || [ "$CP_LABELS_STATUS" -ge 300 ]; then
             echo "Failed to fetch CP issue live state (status $CP_LABELS_STATUS)"
@@ -77,7 +77,7 @@ jobs:
             curl -sS -X POST \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+              "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER/labels" \
               -d "$(jq -n --arg l "android-app-child-created" '{labels: [$l]}')" >/dev/null
 
             exit 0
@@ -113,7 +113,7 @@ jobs:
           curl -sS -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER/labels" \
             -d "$(jq -n --arg l "android-app-child-created" '{labels: [$l]}')" >/dev/null
 
           echo "Added marker label android-app-child-created to CP issue #$CP_NUMBER"
