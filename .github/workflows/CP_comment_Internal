@@ -1,0 +1,95 @@
+name: Sync CP comments to Internal
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  sync_comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show event file path (debug)
+        shell: bash
+        run: |
+          echo "GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
+          echo "Contents (first 60 lines):"
+          # show part of the event file so you can confirm the event payload used (safe read)
+          head -n 60 "$GITHUB_EVENT_PATH" || true
+
+      - name: Mirror comment into Internal issue
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ensure event JSON exists
+          if [ -z "${GITHUB_EVENT_PATH:-}" ] || [ ! -f "$GITHUB_EVENT_PATH" ]; then
+            echo "Event payload not found at GITHUB_EVENT_PATH"
+            exit 1
+          fi
+
+          # If the commenter is a Bot, skip
+          COMMENT_USER_TYPE=$(jq -r '.comment.user.type // ""' "$GITHUB_EVENT_PATH")
+          if [ "$COMMENT_USER_TYPE" = "Bot" ]; then
+            echo "Skipping bot comment"
+            exit 0
+          fi
+
+          # Extract CP number and build title prefix using jq only
+          CP_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+          TITLE_PREFIX="CP#${CP_NUMBER} —"
+          echo "Looking for Internal issue matching prefix: $TITLE_PREFIX"
+
+          # Fetch Internal issues (first 100). Adjust per_page if you have >100 issues.
+          RESP=$(curl -sS \
+            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/dakboard/Internal/issues?state=all&per_page=100")
+
+          INTERNAL_NUMBER=$(echo "$RESP" | jq -r ".[] | select(.title | startswith(\"${TITLE_PREFIX}\")) | .number" | head -n 1)
+
+          if [ -z "$INTERNAL_NUMBER" ] || [ "$INTERNAL_NUMBER" = "null" ]; then
+            echo "No matching Internal issue found"
+            exit 0
+          fi
+
+          echo "Internal issue #${INTERNAL_NUMBER} found. Building payload entirely inside jq..."
+
+          # Build the JSON payload using jq only; never let the shell touch the comment body
+          jq --slurpfile ev "$GITHUB_EVENT_PATH" -n '
+            ($ev[0]) as $e
+            |
+            ($e.comment.user.login // "") as $author
+            |
+            ($e.issue.number | tostring) as $cpnum
+            |
+            ($e.comment.id | tostring) as $cid
+            |
+            ($e.repository.full_name // "") as $repo
+            |
+            ($e.comment.body // "") as $comment_body
+            |
+            {
+              body:
+                ("**Comment from @" + $author + " on " + $repo + " issue #" + $cpnum + ":\\n\\n" + $comment_body + "\\n\\n---\\n[View original comment](https://github.com/" + $repo + "/issues/" + $cpnum + "#issuecomment-" + $cid + ")")
+            }
+          ' \
+          | curl -sS -X POST \
+              -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
+              -d @- \
+              -o response.json -w "%{http_code}" > status.txt
+
+          HTTP_STATUS=$(cat status.txt)
+          echo "Comment HTTP status: $HTTP_STATUS"
+          cat response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "Failed to post comment to Internal (status $HTTP_STATUS)"
+            exit 1
+          fi
+
+          echo "Posted comment safely."
