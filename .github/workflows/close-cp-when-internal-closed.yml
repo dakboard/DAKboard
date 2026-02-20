@@ -48,7 +48,7 @@ jobs:
             -X PATCH \
             -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER" \
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER" \
             -d '{"state":"closed"}')
 
           echo "Close HTTP status: $HTTP_STATUS"
