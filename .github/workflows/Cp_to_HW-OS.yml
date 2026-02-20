@@ -20,8 +20,14 @@ jobs:
           CP_TITLE: ${{ github.event.issue.title }}
           CP_BODY: ${{ github.event.issue.body }}
           CP_URL: ${{ github.event.issue.html_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Repo variables (update here if names change again)
+          CP_REPO="dakboard/DAKboard"        # changed repo name
+          HW_REPO="dakboard/Hardware-OS"
 
           # Gate: must have Hardware-OS label
           HAS_HARDWARE_OS=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Hardware-OS" || true)
@@ -40,10 +46,10 @@ jobs:
           echo "Issue #$CP_NUMBER has Hardware-OS and no marker (payload). Checking live labels on CP issue..."
 
           # Re-check live labels from CP issue (handles race if another run already added marker)
-          CP_STATUS=$(curl -sS -o cp_issue.json -w "%{http_code}" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          CP_STATUS=$(curl -sS -L -o cp_issue.json -w "%{http_code}" \
+            -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER")
+            "https://api.github.com/repos/${CP_REPO}/issues/$CP_NUMBER")
 
           if [ "$CP_STATUS" -lt 200 ] || [ "$CP_STATUS" -ge 300 ]; then
             echo "Failed to fetch CP issue live state (status $CP_STATUS)"
@@ -60,11 +66,11 @@ jobs:
           echo "No marker on CP issue (live). Checking for existing child (best-effort search)..."
 
           # Best-effort dedupe via search (can lag; marker label is the real guard)
-          SEARCH_QUERY="repo:dakboard/Hardware-OS is:issue in:title \"CP#${CP_NUMBER} —\""
+          SEARCH_QUERY="repo:${HW_REPO} is:issue in:title \"CP#${CP_NUMBER} —\""
           SEARCH_URL="https://api.github.com/search/issues?q=$(python -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
 
-          SEARCH_RESP=$(curl -sS \
-            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+          SEARCH_RESP=$(curl -sS -L \
+            -H "Authorization: token $REPO_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "$SEARCH_URL")
 
@@ -74,10 +80,10 @@ jobs:
             echo "Hardware-OS child issue already exists: $EXISTING_URL"
 
             # Add marker label so we don't keep checking/creating
-            curl -sS -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            curl -sS -L -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER/labels" \
+              "https://api.github.com/repos/${CP_REPO}/issues/$CP_NUMBER/labels" \
               -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
 
             exit 0
@@ -90,11 +96,11 @@ jobs:
 
           JSON_PAYLOAD=$(jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}')
 
-          HTTP_STATUS=$(curl -sS -o response.json -w "%{http_code}" \
+          HTTP_STATUS=$(curl -sS -L -o response.json -w "%{http_code}" \
             -X POST \
-            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            -H "Authorization: token $REPO_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/dakboard/Hardware-OS/issues \
+            "https://api.github.com/repos/${HW_REPO}/issues" \
             -d "$JSON_PAYLOAD")
 
           echo "HTTP_STATUS=$HTTP_STATUS"
@@ -110,10 +116,10 @@ jobs:
           echo "hardware_os_number=$HW_NUMBER" >> "$GITHUB_OUTPUT"
 
           # Add marker label to CP issue so we NEVER create duplicates on future events
-          curl -sS -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          curl -sS -L -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER/labels" \
+            "https://api.github.com/repos/${CP_REPO}/issues/$CP_NUMBER/labels" \
             -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
 
           echo "Added marker label hardware-os-child-created to CP issue #$CP_NUMBER"
