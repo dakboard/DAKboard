@@ -25,8 +25,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Repo variables (update here if names change again)
-          CP_REPO="dakboard/DAKboard"        # changed repo name
+          # === Repo configuration ===
+          CP_REPO_ID="70450567"                 
+          CP_REPO_NAME="dakboard/DAKboard"   
           HW_REPO="dakboard/Hardware-OS"
 
           # Gate: must have Hardware-OS label
@@ -45,11 +46,12 @@ jobs:
 
           echo "Issue #$CP_NUMBER has Hardware-OS and no marker (payload). Checking live labels on CP issue..."
 
-          # Re-check live labels from CP issue (handles race if another run already added marker)
-          CP_STATUS=$(curl -sS -L -o cp_issue.json -w "%{http_code}" \
+          # === Fetch CP issue via repository ID (no redirects) ===
+          CP_STATUS=$(curl -sS -o cp_issue.json -w "%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${CP_REPO}/issues/$CP_NUMBER")
+            -H "User-Agent: dakboard-actions" \
+            "https://api.github.com/repositories/${CP_REPO_ID}/issues/$CP_NUMBER")
 
           if [ "$CP_STATUS" -lt 200 ] || [ "$CP_STATUS" -ge 300 ]; then
             echo "Failed to fetch CP issue live state (status $CP_STATUS)"
@@ -65,13 +67,14 @@ jobs:
 
           echo "No marker on CP issue (live). Checking for existing child (best-effort search)..."
 
-          # Best-effort dedupe via search (can lag; marker label is the real guard)
+          # Best-effort dedupe via search (search API may lag; marker label is primary guard)
           SEARCH_QUERY="repo:${HW_REPO} is:issue in:title \"CP#${CP_NUMBER} —\""
           SEARCH_URL="https://api.github.com/search/issues?q=$(python -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
 
-          SEARCH_RESP=$(curl -sS -L \
+          SEARCH_RESP=$(curl -sS \
             -H "Authorization: token $REPO_TOKEN" \
             -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: dakboard-actions" \
             "$SEARCH_URL")
 
           TOTAL=$(echo "$SEARCH_RESP" | jq -r '.total_count // 0')
@@ -80,10 +83,11 @@ jobs:
             echo "Hardware-OS child issue already exists: $EXISTING_URL"
 
             # Add marker label so we don't keep checking/creating
-            curl -sS -L -X POST \
+            curl -sS -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${CP_REPO}/issues/$CP_NUMBER/labels" \
+              -H "User-Agent: dakboard-actions" \
+              "https://api.github.com/repos/${CP_REPO_NAME}/issues/$CP_NUMBER/labels" \
               -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
 
             exit 0
@@ -96,10 +100,11 @@ jobs:
 
           JSON_PAYLOAD=$(jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}')
 
-          HTTP_STATUS=$(curl -sS -L -o response.json -w "%{http_code}" \
+          HTTP_STATUS=$(curl -sS -o response.json -w "%{http_code}" \
             -X POST \
             -H "Authorization: token $REPO_TOKEN" \
             -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: dakboard-actions" \
             "https://api.github.com/repos/${HW_REPO}/issues" \
             -d "$JSON_PAYLOAD")
 
@@ -116,10 +121,11 @@ jobs:
           echo "hardware_os_number=$HW_NUMBER" >> "$GITHUB_OUTPUT"
 
           # Add marker label to CP issue so we NEVER create duplicates on future events
-          curl -sS -L -X POST \
+          curl -sS -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${CP_REPO}/issues/$CP_NUMBER/labels" \
+            -H "User-Agent: dakboard-actions" \
+            "https://api.github.com/repos/${CP_REPO_NAME}/issues/$CP_NUMBER/labels" \
             -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
 
           echo "Added marker label hardware-os-child-created to CP issue #$CP_NUMBER"
