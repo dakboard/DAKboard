@@ -2,7 +2,7 @@ name: Sync CP comments to Internal
 
 on:
   issue_comment:
-    types: [created]
+    types: [created, edited]
 
 permissions:
   contents: read
@@ -11,14 +11,6 @@ jobs:
   sync_comment:
     runs-on: ubuntu-latest
     steps:
-      - name: Show event file path (debug)
-        shell: bash
-        run: |
-          echo "GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
-          echo "Contents (first 60 lines):"
-          # show part of the event file so you can confirm the event payload used (safe read)
-          head -n 60 "$GITHUB_EVENT_PATH" || true
-
       - name: Mirror comment into Internal issue
         shell: bash
         run: |
@@ -30,6 +22,9 @@ jobs:
             exit 1
           fi
 
+          ACTION=$(jq -r '.action' "$GITHUB_EVENT_PATH")
+          echo "Event action: $ACTION"
+
           # If the commenter is a Bot, skip
           COMMENT_USER_TYPE=$(jq -r '.comment.user.type // ""' "$GITHUB_EVENT_PATH")
           if [ "$COMMENT_USER_TYPE" = "Bot" ]; then
@@ -39,26 +34,27 @@ jobs:
 
           # Extract CP number and build title prefix using jq only
           CP_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+          COMMENT_ID=$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")
           TITLE_PREFIX="CP#${CP_NUMBER} —"
           echo "Looking for Internal issue matching prefix: $TITLE_PREFIX"
 
-          # Fetch Internal issues (first 100). Adjust per_page if you have >100 issues.
+          # Fetch Internal issues (first 100)
           RESP=$(curl -sS \
             -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/dakboard/Internal/issues?state=all&per_page=100")
 
-          INTERNAL_NUMBER=$(echo "$RESP" | jq -r ".[] | select(.title | startswith(\"${TITLE_PREFIX}\")) | .number" | head -n 1)
+          INTERNAL_NUMBER=$(echo "$RESP" | jq -r --arg prefix "$TITLE_PREFIX" '.[] | select(.title | startswith($prefix)) | .number' | head -n 1)
 
           if [ -z "$INTERNAL_NUMBER" ] || [ "$INTERNAL_NUMBER" = "null" ]; then
             echo "No matching Internal issue found"
             exit 0
           fi
 
-          echo "Internal issue #${INTERNAL_NUMBER} found. Building payload entirely inside jq..."
+          echo "Internal issue #${INTERNAL_NUMBER} found."
 
-          # Build the JSON payload using jq only; never let the shell touch the comment body
-          jq --slurpfile ev "$GITHUB_EVENT_PATH" -n '
+          # Build the comment body using jq only
+          COMMENT_BODY=$(jq --slurpfile ev "$GITHUB_EVENT_PATH" -nr '
             ($ev[0]) as $e
             |
             ($e.comment.user.login // "") as $author
@@ -71,19 +67,59 @@ jobs:
             |
             ($e.comment.body // "") as $comment_body
             |
-            {
-              body:
-                ("**Comment from @" + $author + " on " + $repo + " issue #" + $cpnum + ":\\n\\n" + $comment_body + "\\n\\n---\\n[View original comment](https://github.com/" + $repo + "/issues/" + $cpnum + "#issuecomment-" + $cid + ")")
-            }
-          ' \
-          | curl -sS -X POST \
+            "**Comment from @" + $author + " on " + $repo + " issue #" + $cpnum + ":**\n\n" + $comment_body + "\n\n---\n[View original comment](https://github.com/" + $repo + "/issues/" + $cpnum + "#issuecomment-" + $cid + ")"
+          ')
+
+          JSON_PAYLOAD=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
+
+          if [ "$ACTION" = "edited" ]; then
+            echo "Edited comment — searching for existing mirrored comment to update..."
+
+            # Fetch all comments on the Internal issue
+            INTERNAL_COMMENTS=$(curl -sS \
               -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
-              -d @- \
-              -o response.json -w "%{http_code}" > status.txt
+              "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments?per_page=100")
 
-          HTTP_STATUS=$(cat status.txt)
+            # Find the mirrored comment by matching the original comment ID in the link
+            MIRROR_COMMENT_ID=$(echo "$INTERNAL_COMMENTS" | jq -r --arg cid "$COMMENT_ID" \
+              '.[] | select(.body | contains("issuecomment-" + $cid)) | .id' | head -n 1)
+
+            if [ -n "$MIRROR_COMMENT_ID" ] && [ "$MIRROR_COMMENT_ID" != "null" ]; then
+              echo "Found mirrored comment #${MIRROR_COMMENT_ID}. Updating..."
+
+              HTTP_STATUS=$(curl -sS -X PATCH \
+                -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/dakboard/Internal/issues/comments/${MIRROR_COMMENT_ID}" \
+                -d "$JSON_PAYLOAD" \
+                -o response.json -w "%{http_code}")
+
+              echo "Update HTTP status: $HTTP_STATUS"
+              cat response.json
+
+              if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+                echo "Failed to update comment on Internal (status $HTTP_STATUS)"
+                exit 1
+              fi
+
+              echo "Updated mirrored comment successfully."
+              exit 0
+            else
+              echo "No existing mirrored comment found — posting as new comment instead."
+            fi
+          fi
+
+          # Post new comment (for 'created' action, or 'edited' where no mirror was found)
+          echo "Posting new comment to Internal issue #${INTERNAL_NUMBER}..."
+
+          HTTP_STATUS=$(curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/dakboard/Internal/issues/${INTERNAL_NUMBER}/comments" \
+            -d "$JSON_PAYLOAD" \
+            -o response.json -w "%{http_code}")
+
           echo "Comment HTTP status: $HTTP_STATUS"
           cat response.json
 
@@ -92,4 +128,4 @@ jobs:
             exit 1
           fi
 
-          echo "Posted comment safely."
+          echo "Posted comment successfully."
