@@ -1,4 +1,4 @@
-name: Create Hardware-OS Issue (with debug)
+name: Create Hardware-OS Issue (with runtime debug)
 
 on:
   issues:
@@ -13,73 +13,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Debug GitHub API access and redirects
-        id: debug
+      - name: Dump runtime workflow info (temporary debug)
+        if: always()
         env:
           CP_NUMBER: ${{ github.event.issue.number }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
-          echo "=== Environment checks ==="
-          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
           echo "Runner: $(uname -a)"
-          echo "HTTP_PROXY: ${HTTP_PROXY:-<unset>}"
-          echo "HTTPS_PROXY: ${HTTPS_PROXY:-<unset>}"
-          echo "NO_PROXY: ${NO_PROXY:-<unset>}"
-
-          # mask helper (show only last 4 chars)
-          mask() {
-            s="$1"
-            if [ -z "$s" ]; then
-              echo "<empty>"
-              return
-            fi
-            len=${#s}
-            if [ "$len" -le 8 ]; then
-              echo "********"
-            else
-              echo "********${s: -4}"
-            fi
-          }
-
-          echo "GITHUB_TOKEN: $(mask "$GITHUB_TOKEN")"
-          echo "REPO_TOKEN:   $(mask "$REPO_TOKEN")"
 
           echo
-          echo "=== Verbose HEAD to owner/repo path (no follow) ==="
-          curl -vI \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "User-Agent: dakboard-actions" \
-            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER" || true
+          echo "----- Listing .github/workflows -----"
+          ls -la .github/workflows || true
 
           echo
-          echo "=== Verbose GET to owner/repo path (follow, trusted) ==="
-          curl -v -L --location-trusted \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "User-Agent: dakboard-actions" \
-            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER" -o /tmp/cp_owner.json || true
-          echo "Owner path response (first 400 chars):"
-          head -c 400 /tmp/cp_owner.json || true
-          echo; echo
+          echo "----- Show the workflow file the runner has on disk (first 200 lines) -----"
+          WORKFLOW_PATH=".github/workflows/create-hw-issue.yml"
+          if [ -f "$WORKFLOW_PATH" ]; then
+            sed -n '1,200p' "$WORKFLOW_PATH" || true
+          else
+            echo "File not found at $WORKFLOW_PATH (maybe different filename). Listing directory:"
+            ls -la .github/workflows || true
+          fi
 
-          echo "=== Verbose GET to numeric repositories path (follow, trusted) ==="
-          curl -v -L --location-trusted \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "User-Agent: dakboard-actions" \
-            "https://api.github.com/repositories/70450567/issues/$CP_NUMBER" -o /tmp/cp_numeric.json || true
-          echo "Numeric path response (first 400 chars):"
-          head -c 400 /tmp/cp_numeric.json || true
-          echo; echo
+          echo
+          echo "----- Raw file fetched from GitHub API at ref $GITHUB_SHA (first 200 lines) -----"
+          curl -sS -H "Accept: application/vnd.github.v3.raw" \
+            -H "Authorization: token $REPO_TOKEN" \
+            "https://api.github.com/repos/dakboard/DAKboard/contents/.github/workflows/create-hw-issue.yml?ref=$GITHUB_SHA" \
+            -o /tmp/workflow_api.yml || true
+          head -n 200 /tmp/workflow_api.yml || true
 
-          echo "=== Show /tmp/cp_numeric.json (pretty) ==="
-          jq -C '.' /tmp/cp_numeric.json || cat /tmp/cp_numeric.json || true
-
-          echo "=== Done debug ==="
+          echo
+          echo "----- Done debug -----"
 
       - name: Create issue in dakboard/Hardware-OS (only if Hardware-OS, no duplicates)
         id: create_hardware_os
@@ -88,20 +59,23 @@ jobs:
           CP_TITLE: ${{ github.event.issue.title }}
           CP_BODY: ${{ github.event.issue.body }}
           CP_URL: ${{ github.event.issue.html_url }}
-          # tokens (keep as you had them)
+          # Tokens (keep as secrets)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
           set -euo pipefail
 
-          # === Repo configuration ===
-          CP_REPO_NAME="dakboard/DAKboard"     # used for label POSTs
+          # === Config ===
+          # (adjust these if you rename repos again)
+          CP_OWNER="dakboard"
+          CP_NAME="DAKboard"
+          CP_REPO_NAME="${CP_OWNER}/${CP_NAME}"
           HW_REPO="dakboard/Hardware-OS"
 
-          # curl flags for REST POSTs (follow redirects & forward auth when redirecting)
-          REST_CURL_FLAGS="-sS -L --location-trusted -H \"User-Agent: dakboard-actions\""
+          # REST curl flags for POSTs (follow redirects & forward auth when redirected)
+          REST_CURL_COMMON="-sS -L --location-trusted -H \"User-Agent: dakboard-actions\""
 
-          # Gate: must have Hardware-OS label (payload)
+          # Gate: must have Hardware-OS label in the event payload
           HAS_HARDWARE_OS=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Hardware-OS" || true)
           if [ -z "$HAS_HARDWARE_OS" ]; then
             echo "Issue #$CP_NUMBER does not have Hardware-OS label. Skipping."
@@ -111,19 +85,20 @@ jobs:
           # Hard dedupe: if marker label is present in THIS event payload, skip
           ALREADY_CREATED=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "hardware-os-child-created" || true)
           if [ -n "$ALREADY_CREATED" ]; then
-            echo "Marker label hardware-os-child-created already present. Skipping."
+            echo "Marker label hardware-os-child-created already present (payload). Skipping."
             exit 0
           fi
 
           echo "Issue #$CP_NUMBER has Hardware-OS and no marker (payload). Checking live labels on CP issue via GraphQL..."
 
-          # === Use GraphQL to fetch live labels for the CP issue (single endpoint, no redirects) ===
-          # If this workflow runs in a repo other than dakboard/DAKboard, replace GITHUB_TOKEN below with a token that has cross-repo read (e.g., secrets.REPO_TOKEN)
+          # === GraphQL read to avoid repo-path redirects ===
           GRAPHQL_PAYLOAD=$(
-            jq -n --arg owner "dakboard" --arg name "DAKboard" --argjson number "$CP_NUMBER" \
+            jq -n --arg owner "$CP_OWNER" --arg name "$CP_NAME" --argjson number "$CP_NUMBER" \
             '{query: "query($owner:String!, $name:String!, $number:Int!){ repository(owner:$owner, name:$name){ issue(number:$number){ labels(first:100){ nodes{ name } } } } }", variables: {owner: $owner, name: $name, number: $number}}'
           )
 
+          # Use GITHUB_TOKEN by default (works since the workflow runs inside the target repo),
+          # If cross-repo execution is required, swap to REPO_TOKEN (bearer) here.
           GRAPHQL_RESP=$(curl -sS -X POST \
             -H "Authorization: bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
@@ -141,6 +116,7 @@ jobs:
             exit 1
           fi
 
+          # Extract live labels
           LIVE_LABELS=$(echo "$GRAPHQL_RESP" | jq -r '.data.repository.issue.labels.nodes[].name // empty' || true)
           LIVE_MARKER=$(echo "$LIVE_LABELS" | grep -Fx "hardware-os-child-created" || true)
           if [ -n "$LIVE_MARKER" ]; then
@@ -150,7 +126,7 @@ jobs:
 
           echo "No marker on CP issue (live). Checking for existing child (best-effort search)..."
 
-          # Best-effort dedupe via search (search API may lag; marker label is primary guard)
+          # Best-effort dedupe via search (can lag; marker label is primary guard)
           SEARCH_QUERY="repo:${HW_REPO} is:issue in:title \"CP#${CP_NUMBER} —\""
           SEARCH_URL="https://api.github.com/search/issues?q=$(python -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
 
@@ -183,6 +159,7 @@ jobs:
 
           JSON_PAYLOAD=$(jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}')
 
+          # Create Hardware-OS issue (use REPO_TOKEN for cross-repo writes)
           HTTP_STATUS=$(curl -sS -L --location-trusted -o response.json -w "%{http_code}" \
             -X POST \
             -H "Authorization: token $REPO_TOKEN" \
