@@ -1,4 +1,4 @@
-name: Create Hardware-OS Issue
+name: Create Hardware-OS Issue (with debug)
 
 on:
   issues:
@@ -13,6 +13,74 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Debug GitHub API access and redirects
+        id: debug
+        env:
+          CP_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Environment checks ==="
+          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "Runner: $(uname -a)"
+          echo "HTTP_PROXY: ${HTTP_PROXY:-<unset>}"
+          echo "HTTPS_PROXY: ${HTTPS_PROXY:-<unset>}"
+          echo "NO_PROXY: ${NO_PROXY:-<unset>}"
+
+          # mask helper (show only last 4 chars)
+          mask() {
+            s="$1"
+            if [ -z "$s" ]; then
+              echo "<empty>"
+              return
+            fi
+            len=${#s}
+            if [ "$len" -le 8 ]; then
+              echo "********"
+            else
+              echo "********${s: -4}"
+            fi
+          }
+
+          echo "GITHUB_TOKEN: $(mask "$GITHUB_TOKEN")"
+          echo "REPO_TOKEN:   $(mask "$REPO_TOKEN")"
+
+          echo
+          echo "=== Verbose HEAD to owner/repo path (no follow) ==="
+          curl -vI \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: dakboard-actions" \
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER" || true
+
+          echo
+          echo "=== Verbose GET to owner/repo path (follow, trusted) ==="
+          curl -v -L --location-trusted \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: dakboard-actions" \
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER" -o /tmp/cp_owner.json || true
+          echo "Owner path response (first 400 chars):"
+          head -c 400 /tmp/cp_owner.json || true
+          echo; echo
+
+          echo "=== Verbose GET to numeric repositories path (follow, trusted) ==="
+          curl -v -L --location-trusted \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: dakboard-actions" \
+            "https://api.github.com/repositories/70450567/issues/$CP_NUMBER" -o /tmp/cp_numeric.json || true
+          echo "Numeric path response (first 400 chars):"
+          head -c 400 /tmp/cp_numeric.json || true
+          echo; echo
+
+          echo "=== Show /tmp/cp_numeric.json (pretty) ==="
+          jq -C '.' /tmp/cp_numeric.json || cat /tmp/cp_numeric.json || true
+
+          echo "=== Done debug ==="
+
       - name: Create issue in dakboard/Hardware-OS (only if Hardware-OS, no duplicates)
         id: create_hardware_os
         env:
@@ -20,20 +88,20 @@ jobs:
           CP_TITLE: ${{ github.event.issue.title }}
           CP_BODY: ${{ github.event.issue.body }}
           CP_URL: ${{ github.event.issue.html_url }}
+          # tokens (keep as you had them)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
           set -euo pipefail
 
           # === Repo configuration ===
-          CP_REPO_ID="70450567"                 # DAKboard repo ID (stable even after rename)
-          CP_REPO_NAME="dakboard/DAKboard"     # Used for label POSTs
+          CP_REPO_NAME="dakboard/DAKboard"     # used for label POSTs
           HW_REPO="dakboard/Hardware-OS"
 
-          # helper: common curl flags
-          CURL_FLAGS="-sS -L --location-trusted -H \"User-Agent: dakboard-actions\""
+          # curl flags for REST POSTs (follow redirects & forward auth when redirecting)
+          REST_CURL_FLAGS="-sS -L --location-trusted -H \"User-Agent: dakboard-actions\""
 
-          # Gate: must have Hardware-OS label
+          # Gate: must have Hardware-OS label (payload)
           HAS_HARDWARE_OS=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Hardware-OS" || true)
           if [ -z "$HAS_HARDWARE_OS" ]; then
             echo "Issue #$CP_NUMBER does not have Hardware-OS label. Skipping."
@@ -47,28 +115,34 @@ jobs:
             exit 0
           fi
 
-          echo "Issue #$CP_NUMBER has Hardware-OS and no marker (payload). Checking live labels on CP issue..."
+          echo "Issue #$CP_NUMBER has Hardware-OS and no marker (payload). Checking live labels on CP issue via GraphQL..."
 
-          # === Fetch CP issue via repository ID (follow redirects and allow auth forwarding) ===
-          CP_STATUS=$(curl -sS -L --location-trusted -o cp_issue.json -w "%{http_code}" \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
+          # === Use GraphQL to fetch live labels for the CP issue (single endpoint, no redirects) ===
+          # If this workflow runs in a repo other than dakboard/DAKboard, replace GITHUB_TOKEN below with a token that has cross-repo read (e.g., secrets.REPO_TOKEN)
+          GRAPHQL_PAYLOAD=$(
+            jq -n --arg owner "dakboard" --arg name "DAKboard" --argjson number "$CP_NUMBER" \
+            '{query: "query($owner:String!, $name:String!, $number:Int!){ repository(owner:$owner, name:$name){ issue(number:$number){ labels(first:100){ nodes{ name } } } } }", variables: {owner: $owner, name: $name, number: $number}}'
+          )
+
+          GRAPHQL_RESP=$(curl -sS -X POST \
+            -H "Authorization: bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
             -H "User-Agent: dakboard-actions" \
-            "https://api.github.com/repositories/${CP_REPO_ID}/issues/$CP_NUMBER" || true)
+            -d "$GRAPHQL_PAYLOAD" \
+            "https://api.github.com/graphql")
 
-          echo "CP_STATUS=$CP_STATUS"
-          if [ -f cp_issue.json ]; then
-            echo "----- cp_issue.json (preview) -----"
-            jq '.' cp_issue.json || cat cp_issue.json
-            echo "-----------------------------------"
-          fi
+          echo "GraphQL response preview:"
+          echo "$GRAPHQL_RESP" | jq '. | {errors: .errors, data_exists: (.data!=null)}' || echo "$GRAPHQL_RESP"
 
-          if [ -z "$CP_STATUS" ] || [ "$CP_STATUS" -lt 200 ] || [ "$CP_STATUS" -ge 300 ]; then
-            echo "Failed to fetch CP issue live state (status $CP_STATUS)"
+          ERR_COUNT=$(echo "$GRAPHQL_RESP" | jq -r '.errors | length // 0')
+          if [ "$ERR_COUNT" -gt 0 ]; then
+            echo "GraphQL returned errors:"
+            echo "$GRAPHQL_RESP" | jq '.errors'
             exit 1
           fi
 
-          LIVE_MARKER=$(jq -r '.labels[].name' cp_issue.json | grep -Fx "hardware-os-child-created" || true)
+          LIVE_LABELS=$(echo "$GRAPHQL_RESP" | jq -r '.data.repository.issue.labels.nodes[].name // empty' || true)
+          LIVE_MARKER=$(echo "$LIVE_LABELS" | grep -Fx "hardware-os-child-created" || true)
           if [ -n "$LIVE_MARKER" ]; then
             echo "Marker label already present on CP issue (live). Skipping."
             exit 0
