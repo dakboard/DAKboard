@@ -43,7 +43,7 @@ jobs:
           CP_STATUS=$(curl -sS -o cp_issue.json -w "%{http_code}" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER")
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER")
 
           if [ "$CP_STATUS" -lt 200 ] || [ "$CP_STATUS" -ge 300 ]; then
             echo "Failed to fetch CP issue live state (status $CP_STATUS)"
@@ -77,7 +77,7 @@ jobs:
             curl -sS -X POST \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+              "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER/labels" \
               -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
 
             exit 0
@@ -86,7 +86,7 @@ jobs:
           echo "No existing child found. Creating Hardware-OS issue."
 
           TITLE="CP#${CP_NUMBER} — ${CP_TITLE}"
-          BODY=$(printf "CP-ISSUE: %s\nCloud-Platform issue: %s\n\nCustomer reported:\n\n%s\n" "$CP_NUMBER" "$CP_URL" "$CP_BODY")
+          BODY=$(printf "CP-ISSUE: %s\nDAKboard issue: %s\n\nCustomer reported:\n\n%s\n" "$CP_NUMBER" "$CP_URL" "$CP_BODY")
 
           JSON_PAYLOAD=$(jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}')
 
@@ -113,7 +113,7 @@ jobs:
           curl -sS -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/dakboard/Cloud-Platform/issues/$CP_NUMBER/labels" \
+            "https://api.github.com/repos/dakboard/DAKboard/issues/$CP_NUMBER/labels" \
             -d "$(jq -n --arg l "hardware-os-child-created" '{labels: [$l]}')" >/dev/null
 
           echo "Added marker label hardware-os-child-created to CP issue #$CP_NUMBER"
