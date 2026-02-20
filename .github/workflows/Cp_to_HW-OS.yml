@@ -1,3 +1,4 @@
+# Force refresh — 2026-02-20
 name: Create Hardware-OS Issue (with runtime debug)
 
 on:
@@ -59,21 +60,16 @@ jobs:
           CP_TITLE: ${{ github.event.issue.title }}
           CP_BODY: ${{ github.event.issue.body }}
           CP_URL: ${{ github.event.issue.html_url }}
-          # Tokens (keep as secrets)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
           set -euo pipefail
 
           # === Config ===
-          # (adjust these if you rename repos again)
           CP_OWNER="dakboard"
           CP_NAME="DAKboard"
           CP_REPO_NAME="${CP_OWNER}/${CP_NAME}"
           HW_REPO="dakboard/Hardware-OS"
-
-          # REST curl flags for POSTs (follow redirects & forward auth when redirected)
-          REST_CURL_COMMON="-sS -L --location-trusted -H \"User-Agent: dakboard-actions\""
 
           # Gate: must have Hardware-OS label in the event payload
           HAS_HARDWARE_OS=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Hardware-OS" || true)
@@ -97,8 +93,6 @@ jobs:
             '{query: "query($owner:String!, $name:String!, $number:Int!){ repository(owner:$owner, name:$name){ issue(number:$number){ labels(first:100){ nodes{ name } } } } }", variables: {owner: $owner, name: $name, number: $number}}'
           )
 
-          # Use GITHUB_TOKEN by default (works since the workflow runs inside the target repo),
-          # If cross-repo execution is required, swap to REPO_TOKEN (bearer) here.
           GRAPHQL_RESP=$(curl -sS -X POST \
             -H "Authorization: bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
@@ -126,9 +120,9 @@ jobs:
 
           echo "No marker on CP issue (live). Checking for existing child (best-effort search)..."
 
-          # Best-effort dedupe via search (can lag; marker label is primary guard)
+          # Best-effort dedupe via search
           SEARCH_QUERY="repo:${HW_REPO} is:issue in:title \"CP#${CP_NUMBER} —\""
-          SEARCH_URL="https://api.github.com/search/issues?q=$(python -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
+          SEARCH_URL="https://api.github.com/search/issues?q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$SEARCH_QUERY'''))")"
 
           SEARCH_RESP=$(curl -sS -L --location-trusted \
             -H "Authorization: token $REPO_TOKEN" \
