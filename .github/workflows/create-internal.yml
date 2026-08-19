@@ -2,7 +2,7 @@ name: Create Internal Issue
 
 on:
   issues:
-    types: [opened]
+    types: [opened, labeled]
 
 jobs:
   create_internal_issue:
