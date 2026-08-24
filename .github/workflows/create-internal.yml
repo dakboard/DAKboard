@@ -4,14 +4,25 @@ on:
   issues:
     types: [opened, labeled]
 
+concurrency:
+  group: create-internal-${{ github.event.issue.number }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   create_internal_issue:
     runs-on: ubuntu-latest
 
+    # For labeled events, only run when Platform was the label added.
+    if: >
+      github.event.action == 'opened' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'Platform')
+
     steps:
-      - name: Create issue in dakboard/Internal (only if Platform)
+      - name: Create issue in dakboard/Internal if needed
         id: create_internal
         env:
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           CP_NUMBER: ${{ github.event.issue.number }}
           CP_TITLE: ${{ github.event.issue.title }}
           CP_BODY: ${{ github.event.issue.body }}
@@ -19,36 +30,88 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Check for Platform label
-          HAS_PLATFORM=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" | grep -Fx "Platform" || true)
+          # Confirm the source issue currently has the Platform label.
+          HAS_PLATFORM=$(
+            jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" |
+            grep -Fx "Platform" || true
+          )
 
           if [ -z "$HAS_PLATFORM" ]; then
-            echo "Issue #$CP_NUMBER does not have Platform label. Skipping Internal creation."
+            echo "Issue #$CP_NUMBER does not have Platform label. Skipping."
             exit 0
           fi
 
-          echo "Issue #$CP_NUMBER has Platform label. Creating Internal issue."
+          #
+          # DUPLICATE PROTECTION
+          #
+          # Internal issues created by this workflow always start with:
+          #   CP#123 —
+          #
+          SEARCH_QUERY="repo:dakboard/Internal is:issue in:title \"CP#${CP_NUMBER}\""
+
+          SEARCH_RESPONSE=$(
+            curl -fsS \
+              -G \
+              -H "Authorization: Bearer $REPO_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              --data-urlencode "q=$SEARCH_QUERY" \
+              https://api.github.com/search/issues
+          )
+
+          EXISTING_NUMBER=$(
+            echo "$SEARCH_RESPONSE" |
+            jq -r --arg prefix "CP#${CP_NUMBER} —" '
+              [.items[]
+                | select(.title | startswith($prefix))
+                | .number
+              ][0] // empty
+            '
+          )
+
+          if [ -n "$EXISTING_NUMBER" ]; then
+            echo "Internal issue already exists: #$EXISTING_NUMBER"
+            echo "Skipping duplicate creation."
+            exit 0
+          fi
+
+          echo "No existing Internal issue found."
+          echo "Creating Internal issue for DAKboard issue #$CP_NUMBER."
 
           TITLE="CP#${CP_NUMBER} — ${CP_TITLE}"
-          BODY=$(printf "Cloud-Platform issue: %s\n\nCustomer reported:\n\n%s\n" "$CP_URL" "$CP_BODY")
 
-          JSON_PAYLOAD=$(jq -n --arg title "$TITLE" --arg body "$BODY" '{title: $title, body: $body}')
+          BODY=$(printf \
+            "Cloud-Platform issue: %s\n\nCustomer reported:\n\n%s\n" \
+            "$CP_URL" \
+            "$CP_BODY"
+          )
 
-          HTTP_STATUS=$(curl -sS -o response.json -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/dakboard/Internal/issues \
-            -d "$JSON_PAYLOAD")
+          JSON_PAYLOAD=$(
+            jq -n \
+              --arg title "$TITLE" \
+              --arg body "$BODY" \
+              '{title: $title, body: $body}'
+          )
+
+          HTTP_STATUS=$(
+            curl -sS \
+              -o response.json \
+              -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer $REPO_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/dakboard/Internal/issues \
+              -d "$JSON_PAYLOAD"
+          )
 
           echo "HTTP_STATUS=$HTTP_STATUS"
-          echo "API response:"
           cat response.json
 
           if [ "$HTTP_STATUS" -ne 201 ]; then
-            echo "Failed to create internal issue (status $HTTP_STATUS)"
+            echo "Failed to create Internal issue."
             exit 1
           fi
 
           INTERNAL_NUMBER=$(jq -r '.number' response.json)
+
+          echo "Created Internal issue #$INTERNAL_NUMBER"
           echo "internal_number=$INTERNAL_NUMBER" >> "$GITHUB_OUTPUT"
