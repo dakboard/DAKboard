@@ -2,7 +2,7 @@ name: Create Internal Issue
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [labeled]
 
 concurrency:
   group: create-internal-${{ github.event.issue.number }}
